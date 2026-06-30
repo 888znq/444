@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tick Compare — 28 Pairs · Deriv Live · 24h UTC</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  width: 100%; height: 100%;
+  background: #000432;
+  font-family: 'Courier New', monospace;
+  overflow: hidden;
+}
+#terminal {
+  width: 100vw; height: 100vh;
+  display: flex; flex-direction: column;
+  background: #000432;
+}
+#header {
+  background: #0d1420;
+  border-bottom: 1px solid #1a2a3a;
+  padding: 0 14px;
+  display: flex; align-items: center; gap: 14px;
+  height: 30px; flex-shrink: 0;
+}
+#hdr-title { color: #4a9eff; font-size: 11px; font-weight: 700; letter-spacing: 2px; white-space: nowrap; }
+#hdr-sub   { color: #2a3d52; font-size: 10px; white-space: nowrap; }
+#hdr-right { margin-left: auto; display: flex; gap: 14px; align-items: center; }
+.live-dot  { width: 6px; height: 6px; border-radius: 50%; background: #666; flex-shrink: 0; }
+.live-dot.on { background: #22cc66; animation: blink 2s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+.hdr-meta { font-size: 10px; color: #2a3d52; white-space: nowrap; }
+#conn-status { font-size: 10px; color: #556; }
+
+#legend-bar {
+  background: #080d17;
+  border-bottom: 1px solid #111d2a;
+  padding: 0 14px;
+  display: flex; gap: 14px; align-items: center;
+  height: 26px; flex-shrink: 0; overflow-x: auto; overflow-y: hidden;
+}
+#legend-bar::-webkit-scrollbar { height: 2px; }
+#legend-bar::-webkit-scrollbar-thumb { background: #1a2a3a; }
+.leg { display: flex; align-items: center; gap: 4px; white-space: nowrap; flex-shrink: 0; }
+.leg-line  { width: 14px; height: 2px; border-radius: 1px; flex-shrink: 0; }
+.leg-name  { font-size: 9px; font-weight: 700; }
+.leg-px    { font-size: 9px; color: #334455; margin-left: 1px; }
+.leg-pct   { font-size: 9px; }
+
+#timer-bar {
+  background: #070b12;
+  padding: 2px 14px;
+  display: flex; align-items: center; gap: 10px;
+  height: 14px; flex-shrink: 0;
+}
+#timer-track { flex: 1; height: 2px; background: #0f1c2a; border-radius: 1px; overflow: hidden; }
+#timer-fill  { height: 100%; width: 0%; background: #4a9eff; border-radius: 1px; transition: width .3s linear; }
+#timer-txt   { font-size: 9px; color: #2a3d52; min-width: 90px; text-align: right; }
+
+#chart-wrap { flex: 1; position: relative; min-height: 0; }
+canvas { position: absolute; top: 0; left: 0; }
+#reset-badge {
+  position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%,-50%);
+  background: rgba(7,11,18,0.96);
+  border: 1px solid #2a4a7a;
+  color: #4a9eff; font-size: 13px; font-weight: 700;
+  padding: 10px 28px; border-radius: 4px;
+  display: none; letter-spacing: 2px; z-index: 10;
+}
+#footer {
+  background: #06090f;
+  border-top: 1px solid #111d2a;
+  padding: 0 14px;
+  display: flex; gap: 20px; align-items: center;
+  height: 22px; flex-shrink: 0;
+}
+.fi   { font-size: 9px; color: #2a3d52; white-space: nowrap; }
+.fi b { color: #3a5570; }
+</style>
+</head>
+<body>
+<div id="terminal">
+  <div id="header">
+    <div id="hdr-title">▌MULTI-PAIR TICK COMPARE</div>
+    <div id="hdr-sub">28 Pairs (26 FX + XAG + XAU + BTC + ETH) · Deriv Live · 00:00–00:00 UTC · normalized from open</div>
+    <div id="hdr-right">
+      <div class="live-dot" id="live-dot"></div>
+      <div class="hdr-meta" id="hdr-time">--:--:--</div>
+      <div class="hdr-meta" id="conn-status">Connecting…</div>
+      <div class="hdr-meta" id="cycle-lbl">Day 1</div>
+    </div>
+  </div>
+  <div id="legend-bar"></div>
+  <div id="timer-bar">
+    <div id="timer-track"><div id="timer-fill"></div></div>
+    <div id="timer-txt">00:00:00 / 24:00:00</div>
+  </div>
+  <div id="chart-wrap">
+    <canvas id="chart"></canvas>
+    <div id="reset-badge">↺ NEW UTC DAY…</div>
+  </div>
+  <div id="footer">
+    <div class="fi">MODE: <b>NORMALIZED %Δ FROM OPEN</b></div>
+    <div class="fi" id="f-leader">LEADER: <b>—</b></div>
+    <div class="fi" id="f-laggard">LAGGARD: <b>—</b></div>
+    <div class="fi" style="margin-left:auto" id="f-spread">MAX SPREAD: <b>—</b></div>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════
+   CONFIG
+═══════════════════════════════════════════════ */
+const WS_URL = 'wss://ws.derivws.com/websockets/v3?app_id=1089';
+
+const PAIRS = [
+  { label:'AUD/CAD', sym:'frxAUDCAD', color:'#00ff88' },
+  { label:'AUD/CHF', sym:'frxAUDCHF', color:'#ffe033' },
+  { label:'AUD/JPY', sym:'frxAUDJPY', color:'#00eeff' },
+  { label:'AUD/NZD', sym:'frxAUDNZD', color:'#ff9500' },
+  { label:'AUD/USD', sym:'frxAUDUSD', color:'#cc88ff' },
+  { label:'EUR/AUD', sym:'frxEURAUD', color:'#ffcc00' },
+  { label:'EUR/CAD', sym:'frxEURCAD', color:'#8899ff' },
+  { label:'EUR/CHF', sym:'frxEURCHF', color:'#00ffcc' },
+  { label:'EUR/GBP', sym:'frxEURGBP', color:'#44bbff' },
+  { label:'EUR/JPY', sym:'frxEURJPY', color:'#ff44cc' },
+  { label:'EUR/NZD', sym:'frxEURNZD', color:'#33ff66' },
+  { label:'EUR/USD', sym:'frxEURUSD', color:'#3399ff' },
+  { label:'GBP/AUD', sym:'frxGBPAUD', color:'#dd66ff' },
+  { label:'GBP/CAD', sym:'frxGBPCAD', color:'#ccff00' },
+  { label:'GBP/CHF', sym:'frxGBPCHF', color:'#00ccff' },
+  { label:'GBP/JPY', sym:'frxGBPJPY', color:'#ff4444' },
+  { label:'GBP/NZD', sym:'frxGBPNZD', color:'#ff6688' },
+  { label:'GBP/USD', sym:'frxGBPUSD', color:'#00ff99' },
+  { label:'NZD/JPY', sym:'frxNZDJPY', color:'#44ffbb' },
+  { label:'NZD/USD', sym:'frxNZDUSD', color:'#ff7722' },
+  { label:'USD/CAD', sym:'frxUSDCAD', color:'#00ffaa' },
+  { label:'USD/CHF', sym:'frxUSDCHF', color:'#ff2244' },
+  { label:'USD/JPY', sym:'frxUSDJPY', color:'#ffaa00' },
+  { label:'USD/NOK', sym:'frxUSDNOK', color:'#ff00ff' },
+  { label:'XAG/USD', sym:'frxXAGUSD', color:'#eef0ff' },
+  { label:'XAU/USD', sym:'frxXAUUSD', color:'#ffdd44' },
+  { label:'BTC/USD', sym:'cryBTCUSD', color:'#ff8800' },
+  { label:'ETH/USD', sym:'cryETHUSD', color:'#9988ff' },
+];
+
+const DAY_SECONDS = 86400;   // 00:00 UTC -> 00:00 UTC
+const PAD         = { l: 4, r: 4, t: 4, b: 4 };
+const DOT_SIZE     = 0.6;    // smallest visible dot radius in px
+
+/* ═══════════════════════════════════════════════
+   STATE
+   Fixed-size typed arrays, one slot per second of the UTC day.
+   Each pair gets a Float32Array(86400) of % values, pre-filled with NaN.
+   Writing the same second twice just overwrites — i.e. "closing tick of
+   that second wins", no matter how many ticks arrived.
+═══════════════════════════════════════════════ */
+const canvas = document.getElementById('chart');
+const ctx    = canvas.getContext('2d');
+let W = 0, H = 0;
+
+let dayNum     = 1;
+let dayStartMs = null;   // epoch ms of 00:00:00 UTC for the current day
+let resetting  = false;
+let wsReady    = false;
+
+const pairData = PAIRS.map(p => ({
+  ...p,
+  buckets: new Float32Array(DAY_SECONDS).fill(NaN), // % from open, per second-of-day
+  lastSec: -1,        // last second index written (for sweeping the live edge)
+  open: null,
+  price: null,
+}));
+
+const symToIdx = {};
+PAIRS.forEach((p, i) => { symToIdx[p.sym] = i; });
+
+/* ═══════════════════════════════════════════════
+   LEGEND
+═══════════════════════════════════════════════ */
+const legendBar = document.getElementById('legend-bar');
+pairData.forEach(p => {
+  const d = document.createElement('div');
+  d.className = 'leg';
+  d.innerHTML =
+    `<div class="leg-line" style="background:${p.color}"></div>`+
+    `<span class="leg-name" style="color:${p.color}">${p.label}</span>`+
+    `<span class="leg-px"  id="lp-${p.label}">-</span>`+
+    `<span class="leg-pct" id="ld-${p.label}" style="color:#445566">—</span>`;
+  legendBar.appendChild(d);
+});
+
+/* ═══════════════════════════════════════════════
+   UTC DAY BOUNDARY HELPERS
+═══════════════════════════════════════════════ */
+function utcMidnightMs(d) {
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0);
+}
+function secondsSinceUtcMidnight(nowMs) {
+  return Math.floor((nowMs - dayStartMs) / 1000);
+}
+
+/* ═══════════════════════════════════════════════
+   DERIV WEBSOCKET
+═══════════════════════════════════════════════ */
+let ws = null;
+let subIndex = 0;
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    wsReady = true;
+    document.getElementById('conn-status').textContent = 'Connected';
+    document.getElementById('live-dot').classList.add('on');
+
+    const now = new Date();
+    dayStartMs = utcMidnightMs(now);
+
+    subIndex = 0;
+    subscribeNext();
+  };
+
+  ws.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    if (msg.error) return;
+    if (msg.msg_type === 'tick') handleTick(msg.tick);
+  };
+
+  ws.onerror = () => {
+    document.getElementById('conn-status').textContent = 'Error — retrying…';
+    document.getElementById('live-dot').classList.remove('on');
+  };
+
+  ws.onclose = () => {
+    wsReady = false;
+    document.getElementById('conn-status').textContent = 'Disconnected — retrying…';
+    document.getElementById('live-dot').classList.remove('on');
+    setTimeout(connect, 3000);
+  };
+}
+
+function subscribeNext() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (subIndex >= PAIRS.length) return;
+  const sym = PAIRS[subIndex].sym;
+  ws.send(JSON.stringify({ ticks: sym, subscribe: 1 }));
+  subIndex++;
+  if (subIndex < PAIRS.length) setTimeout(subscribeNext, 60);
+}
+
+function unsubscribeAll() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ forget_all: 'ticks' }));
+  }
+}
+
+/* Closing-tick-per-second: every tick for a given second overwrites the
+   same array slot, so however many ticks arrive in that second, only the
+   last (most recent / "closing") one is kept. */
+function handleTick(tick) {
+  const idx = symToIdx[tick.symbol];
+  if (idx === undefined || resetting || dayStartMs === null) return;
+
+  const p     = pairData[idx];
+  const price = tick.quote;
+  const now   = Date.now();
+
+  let sec = secondsSinceUtcMidnight(now);
+  if (sec < 0 || sec >= DAY_SECONDS) return; // outside today's window, ignore
+
+  if (p.open === null) p.open = price;
+  p.price = price;
+
+  const pct = (price - p.open) / p.open * 100;
+  p.buckets[sec] = pct;       // overwrite = "closing tick of the second" wins
+  p.lastSec = sec;
+
+  const elPx  = document.getElementById('lp-' + p.label);
+  const elPct = document.getElementById('ld-' + p.label);
+  if (elPx)  elPx.textContent  = price.toFixed(price > 10 ? 3 : 5);
+  if (elPct) {
+    elPct.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(3) + '%';
+    elPct.style.color = pct >= 0 ? '#22cc66' : '#ee4444';
+  }
+}
+
+/* ═══════════════════════════════════════════════
+   RESET — fires exactly at the next UTC midnight
+═══════════════════════════════════════════════ */
+function rolloverToNewDay() {
+  resetting = true;
+  document.getElementById('reset-badge').style.display = 'block';
+  unsubscribeAll();
+  setTimeout(() => {
+    dayNum++;
+    const now = new Date();
+    dayStartMs = utcMidnightMs(now);
+    document.getElementById('cycle-lbl').textContent = 'Day ' + dayNum;
+    pairData.forEach(p => {
+      p.buckets.fill(NaN);
+      p.lastSec = -1;
+      p.open = null;
+      p.price = null;
+    });
+    resetting = false;
+    document.getElementById('reset-badge').style.display = 'none';
+    subIndex = 0;
+    subscribeNext();
+  }, 800);
+}
+
+/* ═══════════════════════════════════════════════
+   Y RANGE — scan only up to the live edge for speed
+═══════════════════════════════════════════════ */
+function getRange() {
+  let lo = 0, hi = 0;
+  pairData.forEach(p => {
+    const end = p.lastSec;
+    if (end < 0) return;
+    const arr = p.buckets;
+    for (let s = 0; s <= end; s++) {
+      const v = arr[s];
+      if (v !== v) continue; // NaN check (fast)
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+  });
+  const half = Math.max(Math.abs(lo), Math.abs(hi), 0.01);
+  const pad  = half * 0.22 + 0.005;
+  return { lo: -(half + pad), hi: half + pad };
+}
+
+/* ═══════════════════════════════════════════════
+   COORDINATE MAP
+═══════════════════════════════════════════════ */
+function chartRight() { return W - PAD.r; }
+function mapX(sec) {
+  const clamped = Math.max(0, Math.min(sec, DAY_SECONDS));
+  return PAD.l + (clamped / DAY_SECONDS) * (chartRight() - PAD.l);
+}
+function mapY(pct, lo, hi) {
+  const cH = H - PAD.t - PAD.b;
+  return PAD.t + cH - ((pct - lo) / (hi - lo)) * cH;
+}
+
+/* ═══════════════════════════════════════════════
+   DRAW
+   Downsampled to ~1 sample per horizontal pixel: for a 1400px-wide chart
+   that's ~1400 buckets-of-buckets across the day instead of 86400 raw
+   points, so render cost stays flat and fast no matter how far into the
+   day we are. Each pixel-bucket keeps the LAST (closing) value seen,
+   consistent with the per-second closing-tick rule.
+═══════════════════════════════════════════════ */
+function draw() {
+  if (!W || !H) return;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#000432';
+  ctx.fillRect(0, 0, W, H);
+
+  const { lo, hi } = getRange();
+  const cR = chartRight();
+  const plotW = Math.max(1, cR - PAD.l);
+
+  // Zero line
+  const zeroY = mapY(0, lo, hi);
+  ctx.strokeStyle = '#ff0000';
+  ctx.lineWidth   = 1.5;
+  ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(PAD.l, zeroY); ctx.lineTo(W - 2, zeroY); ctx.stroke();
+
+  // Hour gridlines (every hour across the fixed 24h span)
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 1;
+  ctx.font = '9px Courier New';
+  ctx.fillStyle = '#2a3d52';
+  ctx.textAlign = 'center';
+  for (let hr = 0; hr <= 24; hr++) {
+    const sec = hr * 3600;
+    const x = mapX(sec);
+    ctx.beginPath(); ctx.moveTo(x, PAD.t); ctx.lineTo(x, H - PAD.b); ctx.stroke();
+    if (hr < 24) {
+      ctx.fillText(String(hr).padStart(2,'0') + ':00', Math.min(x + 18, W - 16), H - 6);
+    }
+  }
+
+  // Pixel bucket width in seconds-of-day
+  const secsPerPx = DAY_SECONDS / plotW;
+
+  pairData.forEach(p => {
+    if (p.lastSec < 0) return;
+    const arr = p.buckets;
+    const endSec = p.lastSec;
+
+    ctx.fillStyle = p.color;
+    ctx.globalAlpha = 0.95;
+
+    // Walk pixel columns from 0 to current live edge, take the LAST
+    // non-NaN value within each pixel's second-range (closing value),
+    // draw one tiny dot per column. This is the "smallest possible dots,
+    // no nodes/lines" rendering you asked for.
+    const lastPx = mapX(endSec);
+    for (let x = PAD.l; x <= lastPx; x++) {
+      const secStart = Math.floor((x - PAD.l) / (cR - PAD.l) * DAY_SECONDS);
+      const secEnd   = Math.min(endSec, Math.floor((x + 1 - PAD.l) / (cR - PAD.l) * DAY_SECONDS));
+      let v = NaN;
+      for (let s = Math.min(secEnd, endSec); s >= secStart; s--) {
+        if (arr[s] === arr[s]) { v = arr[s]; break; } // first non-NaN scanning backward = closing value
+      }
+      if (v !== v) continue;
+      const y = mapY(v, lo, hi);
+      ctx.beginPath();
+      ctx.arc(x, y, DOT_SIZE, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  });
+
+  // Live-edge labels (small, at the current sweep position per pair)
+  ctx.font = 'bold 10px Courier New';
+  ctx.textAlign = 'left';
+  const LGAP = 8, LSPACE = 13;
+  const labels = pairData
+    .filter(p => p.lastSec >= 0)
+    .map(p => {
+      const v = p.buckets[p.lastSec];
+      return { p, tipX: mapX(p.lastSec), rawY: mapY(v, lo, hi) };
+    })
+    .sort((a, b) => a.rawY - b.rawY);
+
+  for (let i = 1; i < labels.length; i++) {
+    if (labels[i].rawY - labels[i-1].rawY < LSPACE)
+      labels[i].rawY = labels[i-1].rawY + LSPACE;
+  }
+  for (let i = labels.length - 2; i >= 0; i--) {
+    if (labels[i+1].rawY - labels[i].rawY < LSPACE)
+      labels[i].rawY = labels[i+1].rawY - LSPACE;
+  }
+
+  labels.forEach(({ p, tipX, rawY }) => {
+    const lx = Math.min(tipX + LGAP, W - 50);
+    const ly = Math.max(PAD.t + 6, Math.min(H - PAD.b - 2, rawY));
+    const tw = ctx.measureText(p.label).width;
+
+    ctx.fillStyle = 'rgba(0,2,30,0.9)';
+    ctx.fillRect(lx - 2, ly - 10, tw + 5, 14);
+    ctx.fillStyle = p.color;
+    ctx.fillText(p.label, lx, ly + 1);
+  });
+
+  // Border
+  ctx.save();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1.5, 1.5, W - 3, H - 3);
+  ctx.restore();
+}
+
+/* ═══════════════════════════════════════════════
+   TIMER / HEADER UI
+═══════════════════════════════════════════════ */
+function fmtHMS(totalSec) {
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = Math.floor(totalSec % 60);
+  return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+}
+
+function updateTimerUI() {
+  if (dayStartMs === null) return;
+  const now = Date.now();
+  const elapsed = Math.max(0, Math.min(DAY_SECONDS, (now - dayStartMs) / 1000));
+
+  document.getElementById('timer-fill').style.width = (elapsed / DAY_SECONDS * 100) + '%';
+  document.getElementById('timer-txt').textContent  = fmtHMS(elapsed) + ' / 24:00:00';
+  document.getElementById('hdr-time').textContent    = new Date().toUTCString().slice(17, 25) + ' UTC';
+
+  if (elapsed >= DAY_SECONDS && !resetting) rolloverToNewDay();
+}
+
+/* ═══════════════════════════════════════════════
+   RESIZE + LOOP
+═══════════════════════════════════════════════ */
+function resize() {
+  const wrap = document.getElementById('chart-wrap');
+  const w = wrap.offsetWidth;
+  const h = wrap.offsetHeight;
+  if (w > 0 && h > 0 && (W !== w || H !== h)) {
+    W = w; H = h;
+    canvas.width  = W;
+    canvas.height = H;
+    canvas.style.width  = W + 'px';
+    canvas.style.height = H + 'px';
+  }
+}
+
+function loop() {
+  resize();
+  draw();
+  updateTimerUI();
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('resize', resize);
+setTimeout(() => {
+  resize();
+  connect();
+  requestAnimationFrame(loop);
+}, 50);
+</script>
+</body>
+</html>
